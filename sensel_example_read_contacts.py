@@ -60,8 +60,7 @@ def openSensorReadContacts():
     while not exit_requested: 
         contacts = sensel_device.readContacts()
   
-        if contacts == None:
-            print("NO CONTACTS", end="\r\n")
+        if len(contacts) == 0:
             continue
    
         for c in contacts:
