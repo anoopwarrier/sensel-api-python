@@ -68,10 +68,12 @@ def openSensorReadContacts():
             if c.type == sensel.SENSEL_EVENT_CONTACT_INVALID:
                 event = "invalid"; 
             elif c.type == sensel.SENSEL_EVENT_CONTACT_START:
+                sensel_device.setLEDBrightness(c.id, 100) #Turn on LED
                 event = "start"
             elif c.type == sensel.SENSEL_EVENT_CONTACT_MOVE:
                 event = "move";
             elif c.type == sensel.SENSEL_EVENT_CONTACT_END:
+                sensel_device.setLEDBrightness(c.id, 0) #Turn off LED
                 event = "end";
             else:
                 event = "error";

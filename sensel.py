@@ -313,7 +313,11 @@ class SenselDevice():
     def setFrameContentControl(self, content):
         return self.writeReg(SENSEL_REG_SCAN_CONTENT_CONTROL, 1, bytearray([content]))
 
-    def setLEDBrightness(self, brightness_levels):
+    def setLEDBrightness(self, idx, brightness):
+        if idx < 16:
+           self.writeReg(SENSEL_REG_LED_BRIGHTNESS + idx, 1, bytearray([brightness]))
+
+    def setLEDBrightnessArr(self, brightness_levels):
         if len(brightness_levels) > 16:
             logging.error("You cannot set %d brightness levels (16 max)" % brightness_levels)
             return False
@@ -524,6 +528,7 @@ class SenselDevice():
         return ec
 
     def closeConnection(self):
+        self.setLEDBrightnessArr([0] * 16)
         sensel_serial.close()
 
 
