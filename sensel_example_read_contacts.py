@@ -80,8 +80,8 @@ def openSensorReadContacts():
     
             print("Contact ID %d, event=%s, mm coord: (%f, %f), force=%d, " 
                   "major=%f, minor=%f, orientation=%f" % 
-                  (c.id, event, c.x_pos_mm, c.y_pos_mm, c.total_force, 
-                   c.major_axis_mm, c.minor_axis_mm, c.orientation_degrees), end="\r\n")
+                  (c.id, event, c.x_pos, c.y_pos, c.total_force, 
+                   c.major_axis, c.minor_axis, c.orientation), end="\r\n")
 
         if len(contacts) > 0:
             print("****", end="\r\n");
