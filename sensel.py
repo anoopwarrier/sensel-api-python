@@ -19,6 +19,7 @@
 import sys
 PY3 = sys.version > '3'
 
+from sensel_register_map import *
 import platform
 import glob
 import logging
@@ -64,37 +65,6 @@ SENSEL_EVENT_CONTACT_END     = 3
 SENSEL_BOARD_ADDR = 0x01
 SENSEL_READ_HEADER = (SENSEL_BOARD_ADDR | (1 << 7))
 SENSEL_WRITE_HEADER = (SENSEL_BOARD_ADDR)
-
-SENSEL_REG_MAGIC                                    = 0x00
-SENSEL_REG_FW_PROTOCOL_VERSION                      = 0x06
-SENSEL_REG_FW_VERSION_MAJOR                         = 0x07
-SENSEL_REG_FW_VERSION_MINOR                         = 0x08
-SENSEL_REG_FW_VERSION_BUILD                         = 0x09
-SENSEL_REG_FW_VERSION_RELEASE                       = 0x0B
-SENSEL_REG_DEVICE_ID                                = 0x0C
-SENSEL_REG_DEVICE_REVISION                          = 0x0E
-SENSEL_REG_DEVICE_SERIAL_NUMBER                     = 0x0F
-SENSEL_REG_SENSOR_ACTIVE_AREA_WIDTH_UM              = 0x14
-SENSEL_REG_SENSOR_ACTIVE_AREA_HEIGHT_UM             = 0x18
-SENSEL_REG_SCAN_FRAME_RATE                          = 0x20
-SENSEL_REG_SCAN_CONTENT_CONTROL                     = 0x24
-SENSEL_REG_SCAN_ENABLED                             = 0x25
-SENSEL_REG_SCAN_READ_FRAME                          = 0x26
-SENSEL_REG_CONTACTS_MAX_COUNT                       = 0x40
-SENSEL_REG_ACCEL_X                                  = 0x60
-SENSEL_REG_ACCEL_Y                                  = 0x62
-SENSEL_REG_ACCEL_Z                                  = 0x64
-SENSEL_REG_BATTERY_STATUS                           = 0x70
-SENSEL_REG_BATTERY_PERCENTAGE                       = 0x71
-SENSEL_REG_POWER_BUTTON_PRESSED                     = 0x72
-SENSEL_REG_LED_BRIGHTNESS                           = 0x80
-SENSEL_REG_UNIT_SHIFT_DIMS                          = 0xA0
-SENSEL_REG_UNIT_SHIFT_FORCE                         = 0xA1
-SENSEL_REG_UNIT_SHIFT_AREA                          = 0xA2
-SENSEL_REG_UNIT_SHIFT_ANGLE                         = 0xA3
-SENSEL_REG_SOFT_RESET                               = 0xE0
-SENSEL_REG_ERROR_CODE                               = 0xEC
-SENSEL_REG_BATTERY_VOLTAGE_MV                       = 0xFE
 
 
 EC_OK = 0
@@ -166,7 +136,7 @@ class SenselDevice():
             sensel_serial.port=port_name
             sensel_serial.open()
             sensel_serial.flushInput()
-            resp = self.readReg(0x00, 6)
+            resp = self.readReg(SENSEL_REG_MAGIC, 6)
         except SenselRegisterReadError:
             logging.warning("Failed to read magic register")
             sensel_serial.close()
@@ -179,11 +149,25 @@ class SenselDevice():
 
         if(resp == SENSEL_MAGIC):
             logging.info("Found sensel sensor at " + str(port_name))
-            return True
         else:
             logging.info("Probe didn't read out magic (%s)" % resp)
             sensel_serial.close()
             return False
+
+        try:
+            protocol_version = _convertBufToVal(self.readReg(SENSEL_REG_FW_VERSION_PROTOCOL, 1))
+        except SenselRegisterReadError:
+            logging.warning("Failed to read protocol register")
+            sensel_serial.close()
+            return False
+
+        if(protocol_version == SENSEL_REG_MAP_PROTOCOL_VERSION):
+            logging.info("Compatible protocol found")
+            return True
+        else:
+            logging.info("Incompatible protocol found")
+            return False
+
     
     def _openSensorWin(self):
         logging.info("Opening device on WIN architecture")
