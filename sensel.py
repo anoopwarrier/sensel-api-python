@@ -75,6 +75,7 @@ EC_REG_INVALID_PERMISSIONS = 3
 sensel_serial = None
 sensel_shift_dims = math.pow(2,8)
 sensel_shift_force = math.pow(2,3)
+sensel_shift_area = math.pow(2,0)
 sensel_shift_angle = math.pow(2,4)
 
 _serial_lock = None
@@ -105,7 +106,7 @@ class SenselContact():
         self.x_pos =       _convertBufToVal(data[2:4])/(1.0*sensel_shift_dims)
         self.y_pos =       _convertBufToVal(data[4:6])/(1.0*sensel_shift_dims)
         self.total_force = _convertBufToVal(data[6:8])/(1.0*sensel_shift_force)
-        self.area =        _convertBufToVal(data[8:10])
+        self.area =        _convertBufToVal(data[8:10])/(1.0*sensel_shift_area)
         self.orientation =  (unpack('h', pack('H',_convertBufToVal(data[10:12])))[0])/(1.0*sensel_shift_angle)
         self.major_axis =        _convertBufToVal(data[12:14])/(1.0*sensel_shift_dims)
         self.minor_axis =        _convertBufToVal(data[14:16])/(1.0*sensel_shift_dims)
@@ -299,8 +300,13 @@ class SenselDevice():
         return self.writeReg(SENSEL_REG_SOFT_RESET, 1, bytearray([1]))
 
     def _populateDimensions(self):
+        global sensel_shift_dims
+        global sensel_shift_force
+        global sensel_shift_area
+        global sensel_shift_angle
         sensel_shift_dims = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_DIMS, 1)))
         sensel_shift_force = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_FORCE, 1)))
+        sensel_shift_area = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_AREA, 1)))
         sensel_shift_angle = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_ANGLE, 1)))
 
     def startScanning(self):
