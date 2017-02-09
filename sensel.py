@@ -19,6 +19,7 @@
 import sys
 PY3 = sys.version > '3'
 
+from ctypes import *
 from sensel_register_map import *
 import platform
 import glob
@@ -35,6 +36,8 @@ else:
 
 from struct import * #pack()
 
+sensel_lib = None
+
 SENSEL_LOGGING_LEVEL = logging.WARNING #(DEBUG/INFO/WARNING/ERROR/CRITICAL)
 
 SENSEL_BAUD = 115200
@@ -45,7 +48,10 @@ if PY3:
 else:
     SENSEL_MAGIC = 'S3NS31'
 
+SENSEL_FRAME_PRESSURE_FLAG = 0x01
+SENSEL_FRAME_LABELS_FLAG   = 0x02
 SENSEL_FRAME_CONTACTS_FLAG = 0x04
+SENSEL_FRAME_ACCEL_FLAG    = 0x08
     
 SENSEL_PT_RESERVED           = 0
 SENSEL_PT_READ_ACK           = 1
@@ -79,6 +85,11 @@ sensel_shift_area = math.pow(2,0)
 sensel_shift_angle = math.pow(2,4)
 
 _serial_lock = None
+
+forces = None
+labels = None
+decompressed_cols = 0
+decompressed_rows = 0
 
 SENSEL_DEVICE_INFO_SIZE = 9
 
@@ -223,6 +234,7 @@ class SenselDevice():
     def openConnection(self, com_port=None):
         global sensel_serial
         global _serial_lock
+        global sensel_lib
 
         self._initLogging()
 
@@ -243,10 +255,13 @@ class SenselDevice():
             resp = self._openAndProbePort(com_port)
         else: #Auto-detect sensor
             if platform_name == "Windows":
+                sensel_lib = windll.LoadLibrary("SenselLib.dll")
                 resp = self._openSensorWin()
             elif platform_name == "Darwin":
+                sensel_lib = cdll.LoadLibrary("./libSensel.dylib")
                 resp = self._openSensorMac()
             else:
+                sensel_lib = cdll.LoadLibrary("./libSensel.so")
                 resp = self._openSensorLinux()
 
         if resp == False:
@@ -268,6 +283,14 @@ class SenselDevice():
     def getMaxContacts(self):
         return _convertBufToVal(self.readReg(SENSEL_REG_CONTACTS_MAX_COUNT, 1))
 
+    def getDecompressedCols(self):
+        global decompressed_cols
+        return decompressed_cols
+
+    def getDecompressedRows(self):
+        global decompressed_rows
+        return decompressed_rows
+
     def getFrameRate(self):
         return _convertBufToVal(self.readReg(SENSEL_REG_SCAN_FRAME_RATE, 1))
 
@@ -284,6 +307,23 @@ class SenselDevice():
         return _convertBufToVal(self.readReg(SENSEL_REG_BATTERY_VOLTAGE_MV, 2)) 
 
     def setFrameContentControl(self, content):
+        global forces
+        global labels
+        global decompressed_cols
+        global decompressed_rows
+        global sensel_lib
+        if(content & SENSEL_FRAME_PRESSURE_FLAG):
+            resp = self.readRegVSP(SENSEL_REG_COMPRESSION_METADATA)
+            if(len(resp) == 6):
+                metadata = (c_ubyte * 6)()
+                for i in range(len(resp)):
+                    metadata[i] = c_ubyte(ord(resp[i]));
+                sensel_lib.senselDecompressInit(metadata, c_int(len(resp)))
+                decompressed_cols = sensel_lib.senselDecompressGetCols()
+                decompressed_rows = sensel_lib.senselDecompressGetRows()
+                forces = cast((c_float * decompressed_cols*decompressed_rows)(), POINTER(c_float))
+                labels = cast((c_ubyte * decompressed_cols*decompressed_rows)(), POINTER(c_ubyte))
+
         return self.writeReg(SENSEL_REG_SCAN_CONTENT_CONTROL, 1, bytearray([content]))
 
     def setLEDBrightness(self, idx, brightness):
@@ -358,6 +398,11 @@ class SenselDevice():
 
 
     def _parseFrameData(self, frame_data):
+        global forces
+        global labels
+        global decompressed_cols
+        global decompressed_rows
+        global sensel_lib
         if len(frame_data) < 2:
             logging.error("Frame data size is less than 2!")
             raise SenselSerialReadError(2, 0)
@@ -383,7 +428,16 @@ class SenselDevice():
         else:
             contacts = None
 
-        return (lost_frame_count, None, None, contacts)
+
+        if content_bit_mask & SENSEL_FRAME_PRESSURE_FLAG:
+            frame_data_c = (c_ubyte * (len(frame_data)))()
+            frame_str = "";
+            for i in range(len(frame_data)):
+                frame_data_c[i] = c_ubyte(ord(frame_data[i]));
+            sensel_lib.senselDecompressFrame(frame_data_c, c_int(len(frame_data)), forces, labels)
+            return (lost_frame_count, forces, labels, contacts)
+        else:
+            return (lost_frame_count, None, None, contacts)
 
 
     def _verifyChecksum(self, data, checksum):
@@ -400,14 +454,6 @@ class SenselDevice():
         else:
             logging.debug("Checksum passed! (%d == %d)" % (checksum, curr_sum))
         return True
-
-    def readContacts(self):
-        frame = self.readFrame()
-        if frame:
-            (rfc, fi, li, contacts) = frame
-            return contacts
-        else:
-            return None
 
     def readReg(self, reg, size):
         global _serial_lock
