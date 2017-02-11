@@ -16,7 +16,7 @@ First, we need to import Sensel:
 import sensel
 ```
 
-Next, we need to properly setup the sensor. We first instantiate an instance of a SenselDevice. Then we call `openConnection()`, which returns true if we successfully connect to a Sensel device. If we connect to a sensor, we need to tell the sensor to send us contacts. We use the method `setFrameContentControl()`, and pass in the `sensel.SENSEL_FRAME_CONTACTS_FLAG` constant. After this, we tell the sensor to start scanning by calling `startScanning()`:
+Next, we need to properly setup the sensor. We first instantiate an instance of a SenselDevice. Then we call `openConnection()`, which returns true if we successfully connect to a Sensel device. If we connect to a sensor, we need to tell the sensor to send us contacts. We use the method `setFrameContentControl()`, and pass in a frame content constant: `sensel.SENSEL_FRAME_CONTACTS_FLAG` `sensel.SENSEL_FRAME_PRESSURE_FLAG` and/or `sensel.SENSEL_FRAME_LABELS_FLAG`. To recieve multipe frame content, perform a bitwise or '|' of the frame content flags. After this, we tell the sensor to start scanning by calling `startScanning()`:
 
 ```python
 sensel_device = sensel.SenselDevice()
@@ -32,13 +32,14 @@ sensel_device.setFrameContentControl(sensel.SENSEL_FRAME_CONTACTS_FLAG)
 sensel_device.startScanning()
 ```
 
-Next, you can read out contacts in your program's main event loop with `readContacts()`. This returns an array of contacts.
+Next, you can read out a frame content in your program's main event loop with `readFrame`. This returns an array of contacts.
 
 ```python
 while looping:
-    contacts = sensel_device.readContacts();
-    if contacts != None: #Check for contacts
-        #USE CONTACT DATA HERE
+    frame = sensel_device.readFrame();
+    if frame:
+        (lost_frame_count, forces, labels, contacts) = frame
+        #USE FRAME DATA HERE
 ```
 
 Before the applciation exits, make sure to cleanly close the connection to the sensor by calling `stopScanning()` and `closeConnection()`
