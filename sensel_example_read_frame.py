@@ -50,8 +50,10 @@ def openSensorReadContacts():
     keyboardReadThreadStart(keypress_handler)
 
     #Enable contact sending
-    sensel_device.setFrameContentControl(sensel.SENSEL_FRAME_CONTACTS_FLAG)
-  
+    sensel_device.setFrameContentControl(sensel.SENSEL_FRAME_PRESSURE_FLAG | sensel.SENSEL_FRAME_LABELS_FLAG)
+    
+    decompressed_cols = sensel_device.getDecompressedCols()
+    decompressed_rows = sensel_device.getDecompressedRows()
     #Enable scanning
     sensel_device.startScanning()
 
@@ -61,32 +63,7 @@ def openSensorReadContacts():
         frame = sensel_device.readFrame()
         if frame:
             (lost_frame_count, forces, labels, contacts) = frame
-  
-            if len(contacts) == 0:
-                continue
-       
-            for c in contacts:
-                event = ""
-                if c.type == sensel.SENSEL_EVENT_CONTACT_INVALID:
-                    event = "invalid"; 
-                elif c.type == sensel.SENSEL_EVENT_CONTACT_START:
-                    sensel_device.setLEDBrightness(c.id, 100) #Turn on LED
-                    event = "start"
-                elif c.type == sensel.SENSEL_EVENT_CONTACT_MOVE:
-                    event = "move";
-                elif c.type == sensel.SENSEL_EVENT_CONTACT_END:
-                    sensel_device.setLEDBrightness(c.id, 0) #Turn off LED
-                    event = "end";
-                else:
-                    event = "error";
-        
-                print("Contact ID %d, event=%s, mm coord: (%f, %f), force=%.3f, " 
-                      "major=%f, minor=%f, orientation=%f" % 
-                      (c.id, event, c.x_pos, c.y_pos, c.total_force, 
-                       c.major_axis, c.minor_axis, c.orientation), end="\r\n")
-
-            if len(contacts) > 0:
-                print("****", end="\r\n");
+            print("Frame Total Force: %f" % sum(forces[0:decompressed_cols*decompressed_rows]), end="\r\n")
 
     sensel_device.stopScanning();
     sensel_device.closeConnection();

@@ -19,18 +19,24 @@
 import sys
 PY3 = sys.version > '3'
 
+from ctypes import *
+from sensel_register_map import *
 import platform
 import glob
 import logging
 import serial
+import serial.tools.list_ports;
 import threading
 import time
+import math
 if PY3:
     import queue
 else:
     import Queue
 
 from struct import * #pack()
+
+sensel_lib = None
 
 SENSEL_LOGGING_LEVEL = logging.WARNING #(DEBUG/INFO/WARNING/ERROR/CRITICAL)
 
@@ -42,19 +48,20 @@ if PY3:
 else:
     SENSEL_MAGIC = 'S3NS31'
 
+SENSEL_FRAME_PRESSURE_FLAG = 0x01
+SENSEL_FRAME_LABELS_FLAG   = 0x02
 SENSEL_FRAME_CONTACTS_FLAG = 0x04
+SENSEL_FRAME_ACCEL_FLAG    = 0x08
     
 SENSEL_PT_RESERVED           = 0
-SENSEL_PT_FRAME              = 1
-SENSEL_PT_FRAME_NACK         = 5
-SENSEL_PT_READ_ACK           = 6
-SENSEL_PT_READ_NACK          = 7
-SENSEL_PT_RVS_ACK            = 8
-SENSEL_PT_RVS_NACK           = 9
-SENSEL_PT_WRITE_ACK          = 10
-SENSEL_PT_WRITE_NACK         = 11
-SENSEL_PT_WVS_ACK            = 12
-SENSEL_PT_WVS_NACK           = 13
+SENSEL_PT_READ_ACK           = 1
+SENSEL_PT_READ_NACK          = 2
+SENSEL_PT_RVS_ACK            = 3
+SENSEL_PT_RVS_NACK           = 4
+SENSEL_PT_WRITE_ACK          = 5
+SENSEL_PT_WRITE_NACK         = 6
+SENSEL_PT_WVS_ACK            = 7
+SENSEL_PT_WVS_NACK           = 8
 
 SENSEL_EVENT_CONTACT_INVALID = 0
 SENSEL_EVENT_CONTACT_START   = 1
@@ -65,33 +72,6 @@ SENSEL_BOARD_ADDR = 0x01
 SENSEL_READ_HEADER = (SENSEL_BOARD_ADDR | (1 << 7))
 SENSEL_WRITE_HEADER = (SENSEL_BOARD_ADDR)
 
-SENSEL_REG_MAGIC                                    = 0x00
-SENSEL_REG_FW_PROTOCOL_VERSION                      = 0x06
-SENSEL_REG_FW_VERSION_MAJOR                         = 0x07
-SENSEL_REG_FW_VERSION_MINOR                         = 0x08
-SENSEL_REG_FW_VERSION_BUILD                         = 0x09
-SENSEL_REG_FW_VERSION_RELEASE                       = 0x0B
-SENSEL_REG_DEVICE_ID                                = 0x0C
-SENSEL_REG_DEVICE_REVISION                          = 0x0E
-SENSEL_REG_DEVICE_SERIAL_NUMBER                     = 0x0F
-SENSEL_REG_SENSOR_ACTIVE_AREA_WIDTH_UM              = 0x14
-SENSEL_REG_SENSOR_ACTIVE_AREA_HEIGHT_UM             = 0x18
-SENSEL_REG_SCAN_FRAME_RATE                          = 0x20
-SENSEL_REG_SCAN_CONTENT_CONTROL                     = 0x24
-SENSEL_REG_SCAN_ENABLED                             = 0x25
-SENSEL_REG_SCAN_READ_FRAME                          = 0x26
-SENSEL_REG_CONTACTS_MAX_COUNT                       = 0x40
-SENSEL_REG_ACCEL_X                                  = 0x60
-SENSEL_REG_ACCEL_Y                                  = 0x62
-SENSEL_REG_ACCEL_Z                                  = 0x64
-SENSEL_REG_BATTERY_STATUS                           = 0x70
-SENSEL_REG_BATTERY_PERCENTAGE                       = 0x71
-SENSEL_REG_POWER_BUTTON_PRESSED                     = 0x72
-SENSEL_REG_LED_BRIGHTNESS                           = 0x80
-SENSEL_REG_SOFT_RESET                               = 0xE0
-SENSEL_REG_ERROR_CODE                               = 0xEC
-SENSEL_REG_BATTERY_VOLTAGE_MV                       = 0xFE
-
 
 EC_OK = 0
 EC_REG_INVALID_ADDRESS = 1
@@ -99,10 +79,17 @@ EC_REG_INVALID_VALUE = 2
 EC_REG_INVALID_PERMISSIONS = 3
 
 sensel_serial = None
-sensor_x_to_mm_factor = -1
-sensor_y_to_mm_factor = -1
+sensel_shift_dims = math.pow(2,8)
+sensel_shift_force = math.pow(2,3)
+sensel_shift_area = math.pow(2,0)
+sensel_shift_angle = math.pow(2,4)
 
 _serial_lock = None
+
+forces = None
+labels = None
+decompressed_cols = 0
+decompressed_rows = 0
 
 SENSEL_DEVICE_INFO_SIZE = 9
 
@@ -117,50 +104,35 @@ class SenselDeviceInfo():
         self.device_revision =  _convertBufToVal(data[8:9])
 
 class SenselContact():
-    data_size = 30
+    data_size = 16
 
     def __init__(self, data):
         if(len(data) != SenselContact.data_size):
             logging.error("Unable to create SenselContact. Data length (%d) != contact length (%d)" %
                           (len(data), SenselContact.data_size))
             raise Exception
-
-        self.total_force = _convertBufToVal(data[0:4])
-        self.uid =         _convertBufToVal(data[4:8])
-        self.area =        _convertBufToVal(data[8:12])
-        x_pos =            _convertBufToVal(data[12:14])
-        y_pos =            _convertBufToVal(data[14:16])
-        self.dx =          _convertBufToVal(data[16:18])
-        self.dy =          _convertBufToVal(data[18:20])
-        orientation =      _convertBufToVal(data[20:22])
-        major_axis =       _convertBufToVal(data[22:24])
-        minor_axis =       _convertBufToVal(data[24:26])
-        self.peak_x =      _convertBufToVal(data[26:27])
-        self.peak_y =      _convertBufToVal(data[27:28])
-        self.id =          _convertBufToVal(data[28:29])
-        self.type =        _convertBufToVal(data[29:30])
-        self.x_pos_mm = x_pos * sensor_x_to_mm_factor
-        self.y_pos_mm = y_pos * sensor_y_to_mm_factor
-        self.orientation_degrees = (unpack('h', pack('H', orientation))[0]) / 256.0
-        self.major_axis_mm = major_axis * sensor_x_to_mm_factor
-        self.minor_axis_mm = minor_axis * sensor_x_to_mm_factor
+        
+        self.id =          _convertBufToVal(data[0:1])
+        self.type =        _convertBufToVal(data[1:2])
+        self.x_pos =       _convertBufToVal(data[2:4])/(1.0*sensel_shift_dims)
+        self.y_pos =       _convertBufToVal(data[4:6])/(1.0*sensel_shift_dims)
+        self.total_force = _convertBufToVal(data[6:8])/(1.0*sensel_shift_force)
+        self.area =        _convertBufToVal(data[8:10])/(1.0*sensel_shift_area)
+        self.orientation =  (unpack('h', pack('H',_convertBufToVal(data[10:12])))[0])/(1.0*sensel_shift_angle)
+        self.major_axis =        _convertBufToVal(data[12:14])/(1.0*sensel_shift_dims)
+        self.minor_axis =        _convertBufToVal(data[14:16])/(1.0*sensel_shift_dims)
 
     def __str__(self):
         retstring = "Sensel Contact:\n"
-        retstring += "total_force: %d\n" % self.total_force
-        retstring += "uid:         %d\n" % self.uid
-        retstring += "area:        %d\n" % self.area
-        retstring += "x_pos:       %d\n" % self.x_pos_mm
-        retstring += "y_pos:       %d\n" % self.y_pos_mm
-        retstring += "dx:          %d\n" % self.dx
-        retstring += "dy:          %d\n" % self.dy
-        retstring += "orientation: %d\n" % self.orientation_degrees
-        retstring += "major_axis:  %d\n" % self.major_axis_mm
-        retstring += "minor_axis:  %d\n" % self.minor_axis_mm
-        retstring += "peak_x:      %d\n" % self.peak_x
-        retstring += "peak_y:      %d\n" % self.peak_y
         retstring += "id:          %d\n" % self.id
         retstring += "type:        %d\n" % self.type
+        retstring += "x_pos:       %d\n" % self.x_pos
+        retstring += "y_pos:       %d\n" % self.y_pos
+        retstring += "total_force: %d\n" % self.total_force
+        retstring += "area:        %d\n" % self.area
+        retstring += "orientation:  %d\n" % self.orientation
+        retstring += "major:        %d\n" % self.major_axis
+        retstring += "minor:        %d\n" % self.minor_axis
         return retstring
 
 class SenselDevice():
@@ -176,7 +148,7 @@ class SenselDevice():
             sensel_serial.port=port_name
             sensel_serial.open()
             sensel_serial.flushInput()
-            resp = self.readReg(0x00, 6)
+            resp = self.readReg(SENSEL_REG_MAGIC, 6)
         except SenselRegisterReadError:
             logging.warning("Failed to read magic register")
             sensel_serial.close()
@@ -189,37 +161,52 @@ class SenselDevice():
 
         if(resp == SENSEL_MAGIC):
             logging.info("Found sensel sensor at " + str(port_name))
-            return True
         else:
             logging.info("Probe didn't read out magic (%s)" % resp)
             sensel_serial.close()
             return False
-        
+
+        try:
+            protocol_version = _convertBufToVal(self.readReg(SENSEL_REG_FW_VERSION_PROTOCOL, 1))
+        except SenselRegisterReadError:
+            logging.warning("Failed to read protocol register")
+            sensel_serial.close()
+            return False
+
+        if(protocol_version == SENSEL_REG_MAP_PROTOCOL_VERSION):
+            logging.info("Compatible protocol found")
+            return True
+        else:
+            logging.info("Incompatible protocol found")
+            return False
+
+    
     def _openSensorWin(self):
         logging.info("Opening device on WIN architecture")
-        for i in range(50):
-            if self._openAndProbePort(i):
-                logging.warning("Found sensor on port COM%s" % i)
-                return True
+        for port in serial.tools.list_ports.comports():
+            if '2C2F:' in port[2]:
+                if self._openAndProbePort(port[0]):
+                    logging.warning("Found sensor on port %s" % port[0])
+                    return True
         return False
 
     def _openSensorMac(self):
         logging.info("Opening device on MAC architecture")
-        port_name_list = glob.glob('/dev/tty.usbmodem*') + glob.glob('/dev/tty*') + glob.glob('/dev/cu*')
-        for port_name in port_name_list:
-            if self._openAndProbePort(port_name):
-                logging.warning("Found sensor on port %s" % port_name)
-                return True
+        for port in serial.tools.list_ports.comports():
+            if '2C2F:' in port[2]:
+                if self._openAndProbePort(port[0]):
+                    logging.warning("Found sensor on port %s" % port[0])
+                    return True
         return False
 
 
     def _openSensorLinux(self):
         logging.info("Opening device on LINUX architecture")
-        port_name_list = glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyS*')
-        for port_name in port_name_list:
-            if self._openAndProbePort(port_name):
-                logging.warning("Found sensor on port %s" % port_name)
-                return True
+        for port in serial.tools.list_ports.comports():
+            if '2c2f:' in port[2] or '2C2F' in port[2]:
+                if self._openAndProbePort(port[0]):
+                    logging.warning("Found sensor on port %s" % port[0])
+                    return True
         return False
 
     def _initLogging(self):
@@ -247,6 +234,7 @@ class SenselDevice():
     def openConnection(self, com_port=None):
         global sensel_serial
         global _serial_lock
+        global sensel_lib
 
         self._initLogging()
 
@@ -263,17 +251,17 @@ class SenselDevice():
 
         _serial_lock = threading.RLock()
 
-        if(com_port != None):
-            if platform_name == "Windows": #Windows serial open takes an integer indicating COM port number, so we need to extract that.
-                if "COM" in com_port:
-                    com_port = int(com_port[3:])  
+        if(com_port != None): 
             resp = self._openAndProbePort(com_port)
         else: #Auto-detect sensor
             if platform_name == "Windows":
+                sensel_lib = windll.LoadLibrary("SenselLib.dll")
                 resp = self._openSensorWin()
             elif platform_name == "Darwin":
+                sensel_lib = cdll.LoadLibrary("./libSensel.dylib")
                 resp = self._openSensorMac()
             else:
+                sensel_lib = cdll.LoadLibrary("./libSensel.so")
                 resp = self._openSensorLinux()
 
         if resp == False:
@@ -295,6 +283,14 @@ class SenselDevice():
     def getMaxContacts(self):
         return _convertBufToVal(self.readReg(SENSEL_REG_CONTACTS_MAX_COUNT, 1))
 
+    def getDecompressedCols(self):
+        global decompressed_cols
+        return decompressed_cols
+
+    def getDecompressedRows(self):
+        global decompressed_rows
+        return decompressed_rows
+
     def getFrameRate(self):
         return _convertBufToVal(self.readReg(SENSEL_REG_SCAN_FRAME_RATE, 1))
 
@@ -311,6 +307,23 @@ class SenselDevice():
         return _convertBufToVal(self.readReg(SENSEL_REG_BATTERY_VOLTAGE_MV, 2)) 
 
     def setFrameContentControl(self, content):
+        global forces
+        global labels
+        global decompressed_cols
+        global decompressed_rows
+        global sensel_lib
+        if(content & SENSEL_FRAME_PRESSURE_FLAG):
+            resp = self.readRegVSP(SENSEL_REG_COMPRESSION_METADATA)
+            if(len(resp) == 6):
+                metadata = (c_ubyte * 6)()
+                for i in range(len(resp)):
+                    metadata[i] = c_ubyte(ord(resp[i]));
+                sensel_lib.senselDecompressInit(metadata, c_int(len(resp)))
+                decompressed_cols = sensel_lib.senselDecompressGetCols()
+                decompressed_rows = sensel_lib.senselDecompressGetRows()
+                forces = cast((c_float * decompressed_cols*decompressed_rows)(), POINTER(c_float))
+                labels = cast((c_ubyte * decompressed_cols*decompressed_rows)(), POINTER(c_ubyte))
+
         return self.writeReg(SENSEL_REG_SCAN_CONTENT_CONTROL, 1, bytearray([content]))
 
     def setLEDBrightness(self, idx, brightness):
@@ -327,16 +340,14 @@ class SenselDevice():
         return self.writeReg(SENSEL_REG_SOFT_RESET, 1, bytearray([1]))
 
     def _populateDimensions(self):
-        global sensor_x_to_mm_factor
-        global sensor_y_to_mm_factor
-
-        sensor_max_x = 256 * (_convertBufToVal(self.readReg(0x10, 1)) - 1)
-        sensor_max_y = 256 * (_convertBufToVal(self.readReg(0x11, 1)) - 1)
-        (sensor_width_um, sensor_height_um) = self.getSensorActiveAreaDimensionsUM()
-        sensor_width_mm  = sensor_width_um  / 1000.0
-        sensor_height_mm = sensor_height_um / 1000.0
-        sensor_x_to_mm_factor = sensor_width_mm  / sensor_max_x
-        sensor_y_to_mm_factor = sensor_height_mm / sensor_max_y
+        global sensel_shift_dims
+        global sensel_shift_force
+        global sensel_shift_area
+        global sensel_shift_angle
+        sensel_shift_dims = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_DIMS, 1)))
+        sensel_shift_force = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_FORCE, 1)))
+        sensel_shift_area = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_AREA, 1)))
+        sensel_shift_angle = math.pow(2,_convertBufToVal(self.readReg(SENSEL_REG_UNIT_SHIFT_ANGLE, 1)))
 
     def startScanning(self):
         self._populateDimensions()
@@ -365,8 +376,10 @@ class SenselDevice():
     def _readFrameData(self):
 
         ack = _convertBufToVal(self._serialRead(1))
+        reg_resp = _convertBufToVal(self._serialRead(1))
+        header = _convertBufToVal(self._serialRead(1))
 
-        if(ack != SENSEL_PT_FRAME):
+        if(ack != SENSEL_PT_RVS_ACK):
             logging.error("Failed to recieve ACK on force frame finish! (received %d)\n" % ack)
             raise SenselSerialReadError(0, 1)
 
@@ -385,6 +398,11 @@ class SenselDevice():
 
 
     def _parseFrameData(self, frame_data):
+        global forces
+        global labels
+        global decompressed_cols
+        global decompressed_rows
+        global sensel_lib
         if len(frame_data) < 2:
             logging.error("Frame data size is less than 2!")
             raise SenselSerialReadError(2, 0)
@@ -392,14 +410,15 @@ class SenselDevice():
         #Pull off frame header info
         content_bit_mask = _convertBufToVal(frame_data[0])
         lost_frame_count = _convertBufToVal(frame_data[1])
-        frame_data = frame_data[2:]
+        frame_data = frame_data[6:]
 
         logging.info("content mask: %d, lost frames: %d" % (content_bit_mask, lost_frame_count))
 
         if content_bit_mask & SENSEL_FRAME_CONTACTS_FLAG:
             logging.info("Received contacts")
-            num_contacts = _convertBufToVal(frame_data[0])
-            frame_data = frame_data[1:]
+            contact_mask = _convertBufToVal(frame_data[0])
+            num_contacts = _convertBufToVal(frame_data[1])
+            frame_data = frame_data[2:]
 
             contacts = []
 
@@ -409,7 +428,16 @@ class SenselDevice():
         else:
             contacts = None
 
-        return (lost_frame_count, None, None, contacts)
+
+        if content_bit_mask & SENSEL_FRAME_PRESSURE_FLAG:
+            frame_data_c = (c_ubyte * (len(frame_data)))()
+            frame_str = "";
+            for i in range(len(frame_data)):
+                frame_data_c[i] = c_ubyte(ord(frame_data[i]));
+            sensel_lib.senselDecompressFrame(frame_data_c, c_int(len(frame_data)), forces, labels)
+            return (lost_frame_count, forces, labels, contacts)
+        else:
+            return (lost_frame_count, None, None, contacts)
 
 
     def _verifyChecksum(self, data, checksum):
@@ -427,14 +455,6 @@ class SenselDevice():
             logging.debug("Checksum passed! (%d == %d)" % (checksum, curr_sum))
         return True
 
-    def readContacts(self):
-        frame = self.readFrame()
-        if frame:
-            (rfc, fi, li, contacts) = frame
-            return contacts
-        else:
-            return None
-
     def readReg(self, reg, size):
         global _serial_lock
 
@@ -443,6 +463,7 @@ class SenselDevice():
         try:
             self._serialWrite(cmd)
             ack = _convertBufToVal(self._serialRead(1))
+            reg_resp = _convertBufToVal(self._serialRead(1))
             resp_size = _convertBufToVal(self._serialRead(2))
 
             if(ack != SENSEL_PT_READ_ACK):
@@ -473,10 +494,13 @@ class SenselDevice():
         try:
             self._serialWrite(cmd)
             ack = _convertBufToVal(self._serialRead(1))
+            reg_resp = _convertBufToVal(self._serialRead(1))
+            header = _convertBufToVal(self._serialRead(1))
             if(ack != SENSEL_PT_RVS_ACK):
                 logging.error("Failed to receive ACK from vsp read (received %d)" % ack)
                 raise SenselSerialReadError
             vsp_size = _convertBufToVal(self._serialRead(2))
+            vsp_size = 0x7FFF & vsp_size;
             resp = self._serialRead(vsp_size)
             resp_checksum = _convertBufToVal(self._serialRead(1))
         except SenselSerialReadError:
@@ -517,6 +541,7 @@ class SenselDevice():
             self._serialWrite(data)
             self._serialWrite(bytearray([checksum]))
             resp = _convertBufToVal(self._serialRead(1)) #Read ACK
+            reg_resp = _convertBufToVal(self._serialRead(1))
         except (SenselSerialWriteError, SenselSerialReadError):
             raise SenselRegisterWriteError(reg, size, data, False, 0)
 
