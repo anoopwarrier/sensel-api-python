@@ -1,13 +1,15 @@
-#Sensel Python API
+# This API is being deprecated. [Check out the new Sensel API.](https://github.com/sensel/sensel-api)
+
+# Sensel Python API
 
 This API allows users to communicate with a Sensel device through Python. This API should be cross-platform, and work across Windows, Mac, and Linux. If you find any incompatibilities, please submit a bug report through Github.
 
-##Setup
+## Setup
 In order to use this API, please install Python (version 2.7 or later) on your machine. You must also install pySerial to allow communication with the sensor. 
 
 Clone this Github project, and drop sensel.py into a new project directory.
 
-##Usage
+## Usage
 The Sensel Python API provides an object-oriented approach to interacting with a Sensel device. Here's a high-level view of how to use this API:
 
 First, we need to import Sensel:
@@ -51,9 +53,9 @@ sensel_device.stopScanning();
 sensel_device.closeConnection();
 ```
 
-##Examples
+## Examples
 
 There is an example in this repository that you can use as a starting point for your project:
 
-####sensel_example_read_contacts.py
+#### sensel_example_read_contacts.py
 This project opens up a Sensel device, reads out contact data, and prints it to the screen.
